@@ -7,7 +7,6 @@ internal sealed record BatteryReading(int Percent, int? VoltageMillivolts, strin
 
 internal static class BatteryReader
 {
-    private const ushort VendorId = 0x3367;
     private const ushort DongleProductId = 0x1970;
     private const ushort WiredProductId = 0x1984;
 
@@ -53,10 +52,7 @@ internal static class BatteryReader
             yield break;
         }
 
-        var command = new byte[64];
-        command[0] = 0xA1;
-        command[1] = 0xB4;
-
+        var command = CreateBatteryCommand();
         if (!NativeMethods.HidD_SetFeature(handle, command, command.Length))
         {
             yield return $"set feature failed: {Marshal.GetLastWin32Error()}";
@@ -74,10 +70,10 @@ internal static class BatteryReader
             yield break;
         }
 
-        yield return $"get feature: ok";
+        yield return "get feature: ok";
         yield return $"response[0..20]: {string.Join(" ", response.Take(21).Select(b => b.ToString("X2")))}";
         yield return $"marker: {response[1]:X2}";
-        yield return $"percent: {response[16]}";
+        yield return $"percent byte: {response[16]}";
     }
 
     private static BatteryReading? TryReadFromPath(string path, string source)
@@ -93,10 +89,7 @@ internal static class BatteryReader
 
         if (handle.IsInvalid) return null;
 
-        var command = new byte[64];
-        command[0] = 0xA1;
-        command[1] = 0xB4;
-
+        var command = CreateBatteryCommand();
         if (!NativeMethods.HidD_SetFeature(handle, command, command.Length)) return null;
         Thread.Sleep(500);
 
@@ -107,13 +100,21 @@ internal static class BatteryReader
         if (response[1] != 0x01 && response[1] != 0x08) return null;
 
         var percent = response[16];
-        if (percent > 100) percent = 100;
+        if (percent > 100) return null;
 
         int? voltage = null;
         var rawVoltage = response[17] | (response[18] << 8);
         if (rawVoltage is > 2500 and < 5000) voltage = rawVoltage;
 
         return new BatteryReading(percent, voltage, source);
+    }
+
+    private static byte[] CreateBatteryCommand()
+    {
+        var command = new byte[64];
+        command[0] = 0xA1;
+        command[1] = 0xB4;
+        return command;
     }
 
     private static IEnumerable<(string Path, string Source)> EnumerateTargets()

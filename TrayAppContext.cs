@@ -16,10 +16,12 @@ internal sealed class TrayAppContext : ApplicationContext
     private const int StaleAfterMs = 5 * PollIntervalMs;
 
     private readonly NotifyIcon _notifyIcon;
-    private readonly System.Windows.Forms.Timer _timer;
     private readonly ToolStripMenuItem _startupMenuItem;
+    private readonly CancellationTokenSource _shutdown = new();
     private Icon? _currentIcon;
     private int? _lastPercent;
+    private int? _displayedPercent;
+    private bool _displayedConnected;
     private DateTime _lastReadUtc = DateTime.MinValue;
     private bool _refreshInProgress;
 
@@ -50,11 +52,38 @@ internal sealed class TrayAppContext : ApplicationContext
             if (e.Button == MouseButtons.Left) OpenConfigurationTool();
         };
 
-        _timer = new System.Windows.Forms.Timer { Interval = PollIntervalMs };
-        _timer.Tick += async (_, _) => await RefreshAsync();
-        _timer.Start();
+        _ = PollLoopAsync(_shutdown.Token);
+    }
 
-        _ = RefreshAsync();
+    private async Task PollLoopAsync(CancellationToken cancellationToken)
+    {
+        await RefreshWithoutStoppingPollLoopAsync();
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(PollIntervalMs, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+
+            await RefreshWithoutStoppingPollLoopAsync();
+        }
+    }
+
+    private async Task RefreshWithoutStoppingPollLoopAsync()
+    {
+        try
+        {
+            await RefreshAsync();
+        }
+        catch
+        {
+            _refreshInProgress = false;
+        }
     }
 
     private async Task RefreshAsync()
@@ -75,6 +104,7 @@ internal sealed class TrayAppContext : ApplicationContext
                     return;
                 }
 
+                _lastPercent = null;
                 UpdateIcon(null, false, "OP1w: unavailable");
                 return;
             }
@@ -93,7 +123,16 @@ internal sealed class TrayAppContext : ApplicationContext
     {
         for (var attempt = 0; attempt < 3; attempt++)
         {
-            var reading = BatteryReader.TryRead();
+            BatteryReading? reading = null;
+            try
+            {
+                reading = BatteryReader.TryRead();
+            }
+            catch
+            {
+                // Device reconnects can cause transient HID/setupapi failures.
+            }
+
             if (reading is not null) return reading;
             Thread.Sleep(750);
         }
@@ -103,17 +142,27 @@ internal sealed class TrayAppContext : ApplicationContext
 
     private void UpdateIcon(int? percent, bool connected, string text)
     {
+        var displayChanged = _displayedPercent != percent || _displayedConnected != connected;
         var oldIcon = _currentIcon;
         _currentIcon = CreateIcon(percent, connected);
         _notifyIcon.Icon = _currentIcon;
         _notifyIcon.Text = text.Length <= 127 ? text : text[..127];
+
+        if (displayChanged && _notifyIcon.Visible)
+        {
+            _notifyIcon.Visible = false;
+            _notifyIcon.Visible = true;
+        }
+
+        _displayedPercent = percent;
+        _displayedConnected = connected;
         oldIcon?.Dispose();
     }
 
     protected override void ExitThreadCore()
     {
-        _timer.Stop();
-        _timer.Dispose();
+        _shutdown.Cancel();
+        _shutdown.Dispose();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
         _currentIcon?.Dispose();
@@ -167,7 +216,7 @@ internal sealed class TrayAppContext : ApplicationContext
         }
         catch
         {
-            // Ignore launch failures so the tray app stays battery-only.
+            // Keep the tray app battery-only if the optional vendor tool fails to launch.
         }
     }
 

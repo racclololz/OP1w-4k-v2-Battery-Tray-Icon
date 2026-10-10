@@ -45,6 +45,9 @@ internal sealed class TrayAppContext : ApplicationContext
             ContextMenuStrip = new ContextMenuStrip()
         };
         _notifyIcon.ContextMenuStrip.Items.Add(_startupMenuItem);
+        var refreshItem = new ToolStripMenuItem("Refresh now");
+        refreshItem.Click += async (_, _) => await RefreshWithoutStoppingPollLoopAsync();
+        _notifyIcon.ContextMenuStrip.Items.Add(refreshItem);
         _notifyIcon.ContextMenuStrip.Items.Add(new ToolStripSeparator());
         _notifyIcon.ContextMenuStrip.Items.Add(exitItem);
         _notifyIcon.MouseClick += (_, e) =>
@@ -80,8 +83,9 @@ internal sealed class TrayAppContext : ApplicationContext
         {
             await RefreshAsync();
         }
-        catch
+        catch (Exception error)
         {
+            AppLog.Write($"refresh failed: {error}");
             _refreshInProgress = false;
         }
     }
@@ -100,18 +104,21 @@ internal sealed class TrayAppContext : ApplicationContext
             {
                 if (_lastPercent is int percent && DateTime.UtcNow - _lastReadUtc < TimeSpan.FromMilliseconds(StaleAfterMs))
                 {
-                    UpdateIcon(percent, true, $"OP1w: {percent}%");
+                    UpdateIcon(percent, false, $"OP1w: {percent}% last known; mouse asleep or unavailable");
+                    AppLog.Write($"display: {percent}% last known; no fresh response");
                     return;
                 }
 
                 _lastPercent = null;
                 UpdateIcon(null, false, "OP1w: unavailable");
+                AppLog.Write("display: unavailable; no fresh response");
                 return;
             }
 
             _lastPercent = reading.Percent;
             _lastReadUtc = DateTime.UtcNow;
             UpdateIcon(reading.Percent, true, $"OP1w: {reading.Percent}%");
+            AppLog.Write($"display: {reading.Percent}% fresh ({reading.Source}, {reading.VoltageMillivolts} mV)");
         }
         finally
         {

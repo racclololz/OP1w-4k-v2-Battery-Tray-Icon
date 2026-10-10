@@ -89,15 +89,44 @@ internal static class BatteryReader
 
         if (handle.IsInvalid) return null;
 
-        var command = CreateBatteryCommand();
-        if (!NativeMethods.HidD_SetFeature(handle, command, command.Length)) return null;
-        Thread.Sleep(500);
+        var response = ReadFreshResponse(() => ExchangeBatteryCommand(handle), Thread.Sleep);
+        return response is null ? null : ParseResponse(response, source);
+    }
 
+    internal static byte[]? ReadFreshResponse(Func<byte[]?> exchange, Action<int> delay)
+    {
+        if (exchange() is null) return null;
+        delay(100);
+        return exchange();
+    }
+
+    private static byte[]? ExchangeBatteryCommand(SafeFileHandle handle)
+    {
+        var command = CreateBatteryCommand();
+        if (!NativeMethods.HidD_SetFeature(handle, command, command.Length))
+        {
+            AppLog.Write($"battery request failed: {Marshal.GetLastWin32Error()}");
+            return null;
+        }
+
+        Thread.Sleep(500);
         var response = new byte[64];
         response[0] = 0xA1;
-        if (!NativeMethods.HidD_GetFeature(handle, response, response.Length)) return null;
+        if (!NativeMethods.HidD_GetFeature(handle, response, response.Length))
+        {
+            AppLog.Write($"battery response failed: {Marshal.GetLastWin32Error()}");
+            return null;
+        }
+
+        AppLog.Write($"battery response: status=0x{response[1]:X2}, rawPercent={response[16]}");
+        return response;
+    }
+
+    internal static BatteryReading? ParseResponse(byte[] response, string source)
+    {
+        if (response.Length < 19) return null;
         if (response[0] != 0xA1) return null;
-        if (response[1] != 0x01 && response[1] != 0x08) return null;
+        if (response[1] != 0x01) return null;
 
         var percent = response[16];
         if (percent > 100) return null;
